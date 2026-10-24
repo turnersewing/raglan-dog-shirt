@@ -34,6 +34,9 @@
   .msg.err{background:#fdecea;color:var(--err);border:1px solid #f4c3bd}
   #preview{background:#fff;border:1px solid var(--line);border-radius:8px;overflow:auto}
   #preview svg{display:block;width:100%;height:auto}
+  #preview .piece{fill:rgba(31,95,91,.07)}
+  label.chk{display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer}
+  label.chk input{margin-top:3px}
   table{border-collapse:collapse;width:100%;font-size:14px;margin-top:10px}
   td,th{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left}
   th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -68,6 +71,8 @@
     <fieldset id="measures"><legend>Dog measurements</legend></fieldset>
     <fieldset id="options"><legend>Fit and sewing</legend></fieldset>
     <fieldset id="trims"><legend>Collar, cuffs and hem trim</legend></fieldset>
+    <fieldset id="leash"><legend>Leash buttonhole</legend></fieldset>
+    <fieldset id="layoutset"><legend>Layout and output</legend></fieldset>
     <div class="btns">
       <button type="button" class="sec" id="reset">Reset to example</button>
       <button type="button" class="sec" id="share">Copy link</button>
@@ -77,10 +82,11 @@
   <section>
     <div id="messages"></div>
     <div class="btns">
-      <button type="button" id="print">Print at full size</button>
+      <button type="button" id="downloadPdf">Download PDF (exact size)</button>
       <button type="button" class="sec" id="download">Download SVG</button>
-      <span id="pagecount" class="note" style="align-self:center;margin:0"></span>
+      <button type="button" class="sec" id="print">Print on sheets</button>
     </div>
+    <p class="note" style="margin:-4px 0 10px"><span id="sheetsize"></span> &middot; <span id="pagecount"></span></p>
     <div id="preview" class="card" style="padding:8px" aria-label="Pattern preview"></div>
     <div class="card" style="margin-top:12px">
       <strong>Seams that must match when sewing</strong>
@@ -120,7 +126,20 @@ const TRIMS = [
   {id:"hemH",    label:"Hem trim height",   hint:"Finished height after folding in half. 0 leaves the trim out.",   def:1.5, unit:true},
   {id:"trimPct", label:"Trim length (% of opening)", hint:"100 = as long as the edge it joins. Use less for stretchy rib.", def:100, unit:false},
 ];
-const ALL = [...MEASURES,...OPTIONS,...TRIMS];
+const LEASH = [
+  {id:"bhDist", label:"Distance from neck seam", hint:"Down the back fold, from the neck seam to the middle of the buttonhole", def:3, unit:true},
+  {id:"bhLen",  label:"Buttonhole length",       hint:"Total length across the fold",                                            def:1, unit:true},
+];
+const LAYOUTF = [
+  {id:"roll", label:"Paper roll width", hint:"Pieces are packed to fit this width. The roll length is continuous.", def:17, unit:true},
+];
+const FLAGS = [
+  {id:"bhOn",      host:"leash",  label:"Add a leash buttonhole mark on the back fold", def:true},
+  {id:"foldStrips",host:"trims",  label:"Draw the collar and hem trim as half pieces on a fold", def:true},
+  {id:"showNames", host:"layoutset", label:"Show piece names", def:true},
+  {id:"showText",  host:"layoutset", label:"Show instruction text (cut counts, CUT ON FOLD, FOLD, sizes)", def:true},
+];
+const ALL = [...MEASURES,...OPTIONS,...TRIMS,...LEASH,...LAYOUTF];
 const CM = 2.54;
 let unit = "in";
 
@@ -139,6 +158,15 @@ function buildRows(host, list){
 buildRows(document.getElementById("measures"), MEASURES);
 buildRows(document.getElementById("options"), OPTIONS);
 buildRows(document.getElementById("trims"), TRIMS);
+buildRows(document.getElementById("leash"), LEASH);
+buildRows(document.getElementById("layoutset"), LAYOUTF);
+for(const f of FLAGS){
+  const lab=document.createElement("label"); lab.className="chk";
+  lab.innerHTML=`<input type="checkbox" id="c_${f.id}"><span>${f.label}</span>`;
+  lab.querySelector("input").addEventListener("change",update);
+  const host=document.getElementById(f.host);
+  if(f.host==="leash") host.insertBefore(lab,host.children[1]); else host.append(lab);
+}
 
 const isLen = id => ALL.some(f=>f.id===id && (MEASURES.includes(f) || f.unit));
 const fmtIn = v => (unit==="cm" ? v*CM : v);
@@ -157,9 +185,11 @@ function readInches(){
     if(!isFinite(v)) v = NaN;
     out[f.id] = isLen(f.id) && unit==="cm" ? v/CM : v;
   }
+  for(const f of FLAGS) out[f.id]=document.getElementById("c_"+f.id).checked;
   return out;
 }
-const defaults = () => Object.fromEntries(ALL.map(f=>[f.id,f.def]));
+const defaults = () => ({...Object.fromEntries(ALL.map(f=>[f.id,f.def])),...Object.fromEntries(FLAGS.map(f=>[f.id,f.def]))});
+function setFlags(values){ for(const f of FLAGS) document.getElementById("c_"+f.id).checked=!!values[f.id]; }
 
 /* ---------- geometry (inches, x right, y down) ---------- */
 function calc(v){
@@ -243,12 +273,15 @@ function draft(v){
   if(v.frontLen>v.backLen) warnings.push("The front length is longer than the back length. That is unusual; check the two measurements.");
   if(g.backW<=0) errors.push("The front panel is wider than the whole body. Check the chest girth and front chest width.");
   if(v.trimPct<=0) errors.push("The trim length percentage must be more than zero.");
+  if(v.roll<=1.5) errors.push("The paper roll width must be more than 1.5 in.");
+  if(v.bhOn && v.bhDist+0.5>v.backLen) errors.push("The buttonhole is too far from the neck seam: it must sit inside the back piece.");
   if(errors.length) return {g,warnings,errors,pieces,checks};
 
   const back=halfBodyPoly(g.halfBack,g.neckBack,g.depth,g.hemSide,v.backLen,v.hemAngle);
   const front=halfBodyPoly(g.halfFront,g.neckFront,g.depth,g.hemSide,v.frontLen,v.hemAngle);
   pieces.push({id:"back",kind:"body",name:"BACK",cut:"Cut 1 on fold",poly:back.poly,fold:back.fold,
-               halfW:g.halfBack,depth:g.depth,hemCentre:v.backLen,hemSide:g.hemSide,notches:[{edge:1,count:2}]});
+               halfW:g.halfBack,depth:g.depth,hemCentre:v.backLen,hemSide:g.hemSide,notches:[{edge:1,count:2}],
+               buttonhole:v.bhOn?{d:v.bhDist,len:v.bhLen}:null});
   pieces.push({id:"front",kind:"body",name:"FRONT",cut:"Cut 1 on fold",poly:front.poly,fold:front.fold,
                halfW:g.halfFront,depth:g.depth,hemCentre:v.frontLen,hemSide:g.hemSide,notches:[{edge:1,count:1}]});
 
@@ -273,11 +306,15 @@ function draft(v){
   const pct=v.trimPct/100;
   const neckTotal=2*g.neckBack+2*g.neckFront+2*g.neckSleeve;
   const hemTotal=2*(back.hemArc+front.hemArc);
-  const rect=(id,name,cut,len,fh)=>({id,kind:"rect",name,cut,len,fh,
-     poly:[{x:0,y:0},{x:len,y:0},{x:len,y:2*fh},{x:0,y:2*fh}],fold:new Set(),notches:[]});
-  if(v.collarH>0) pieces.push(rect("collar","COLLAR","Cut 1",neckTotal*pct,v.collarH));
-  if(v.cuffH>0)   pieces.push(rect("cuff","SLEEVE CUFF","Cut 2",g.tubeW*pct,v.cuffH));
-  if(v.hemH>0)    pieces.push(rect("hem","HEM TRIM","Cut 1",hemTotal*pct,v.hemH));
+  // strips: a full rectangle, or (onFold) the right half of one with the fold on its left short edge
+  const strip=(id,name,cut,len,fh,onFold)=>{
+    const L=onFold?len/2:len, H=2*fh;
+    return {id,kind:"rect",name,cut:cut+(onFold?" on fold":""),len:L,fullLen:len,fh,onFold,
+      poly:[{x:0,y:0},{x:L,y:0},{x:L,y:H},{x:0,y:H}],fold:onFold?new Set([3]):new Set(),notches:[],canRotate:true};
+  };
+  if(v.collarH>0) pieces.push(strip("collar","COLLAR","Cut 1",neckTotal*pct,v.collarH,v.foldStrips));
+  if(v.cuffH>0)   pieces.push(strip("cuff","SLEEVE CUFF","Cut 2",g.tubeW*pct,v.cuffH,false));
+  if(v.hemH>0)    pieces.push(strip("hem","HEM TRIM","Cut 1",hemTotal*pct,v.hemH,v.foldStrips));
 
   const f=x=>round(fmtIn(x),2);
   checks.push(["Back raglan seam", f(dist(back.key.neckR,back.key.armR)), sk?f(dist(sk.sl1,sk.sl3)):"-", "sleeve back edge (double notch)"]);
@@ -285,92 +322,188 @@ function draft(v){
   checks.push(["Back side seam", f(dist(back.key.armR,back.key.sideR)), f(dist(front.key.armR,front.key.sideR)), "front side seam"]);
   if(sk) checks.push(["Sleeve underarm seam", f(dist(sk.sl3,sk.sl5)), f(dist(sk.sl4,sk.sl6)), "other underarm edge"]);
   checks.push(["Neck opening (all pieces)", f(neckTotal), f(v.neck), "neck girth"]);
-  if(v.collarH>0) checks.push(["Collar strip", f(neckTotal*pct), f(neckTotal), "neck opening"]);
+  if(v.collarH>0) checks.push(["Collar strip (full length)", f(neckTotal*pct), f(neckTotal), "neck opening"]);
   if(v.cuffH>0)   checks.push(["Cuff strip", f(g.tubeW*pct), f(g.tubeW), "sleeve cuff edge"]);
-  if(v.hemH>0)    checks.push(["Hem trim strip", f(hemTotal*pct), f(hemTotal), "hem edge, all round"]);
+  if(v.hemH>0)    checks.push(["Hem trim strip (full length)", f(hemTotal*pct), f(hemTotal), "hem edge, all round"]);
   return {g,warnings,errors,pieces,checks};
 }
 
-/* ---------- layout: shelf-pack the pieces on one sheet (inches) ---------- */
-function layout(v,res){
-  const margin=0.75, gap=0.75, sa=Math.max(0,v.sa);
-  const items=res.pieces.map(p=>{
-    const it={...p,sa:sa>0?offsetPoly(p.poly,sa,p.fold):null,saDist:sa};
-    it.bb=bbox(it.sa||it.poly); it.w=it.bb.x1-it.bb.x0; it.h=it.bb.y1-it.bb.y0; return it;
-  });
-  const firstRow=items.filter(i=>["back","front","sleeve"].includes(i.id));
-  const rowW=firstRow.reduce((s,i)=>s+i.w,0)+gap*Math.max(0,firstRow.length-1);
-  const limit=Math.max(rowW,...items.map(i=>i.w));
-  let x=margin,y=margin,rowH=0,maxX=0;
-  for(const it of items){
-    if(x>margin && x+it.w>margin+limit+1e-6){ x=margin; y+=rowH+gap; rowH=0; }
-    it.dx=x-it.bb.x0; it.dy=y-it.bb.y0;
-    x+=it.w+gap; rowH=Math.max(rowH,it.h); maxX=Math.max(maxX,x-gap);
-  }
-  return {items,W:maxX+margin,H:y+rowH+margin};
+/* ---------- drawing primitives (piece-local inches) ---------- */
+/* poly: {t:"poly",pts,closed,kind:"ink"|"sa",w,dash,cls}  fill: {t:"fill",pts}  text: {t:"text",x,y,size,text,bold,rot} */
+function arrowPrims(x0,y0,x1,y1){
+  const vert=Math.abs(x1-x0)<1e-9, a=0.25, w=0.09, sg=vert?Math.sign(y1-y0):Math.sign(x1-x0);
+  const head=(x,y,s)=>vert?[{x,y},{x:x-w,y:y+s*a},{x:x+w,y:y+s*a}]:[{x,y},{x:x+s*a,y:y-w},{x:x+s*a,y:y+w}];
+  return [{t:"poly",pts:[{x:x0,y:y0},{x:x1,y:y1}],closed:false,kind:"ink",w:0.02},
+          {t:"fill",pts:head(x0,y0,sg)},{t:"fill",pts:head(x1,y1,-sg)}];
 }
-
-/* ---------- SVG output ---------- */
-const path=(pts,dx,dy)=>"M"+pts.map(p=>(p.x+dx).toFixed(3)+" "+(p.y+dy).toFixed(3)).join("L")+"Z";
-const T=(x,y,size,txt,extra="")=>`<text x="${x.toFixed(3)}" y="${y.toFixed(3)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${size}" fill="#111" ${extra}>${txt}</text>`;
-function arrow(x0,y0,x1,y1){          // line with arrowheads at both ends (vertical or horizontal)
-  const vert=Math.abs(x1-x0)<1e-9, a=0.25, w=0.09, sgn=vert?Math.sign(y1-y0):Math.sign(x1-x0);
-  const head=(x,y,s)=>vert?`M${x} ${y}l${-w} ${s*a}h${2*w}z`:`M${x} ${y}l${s*a} ${-w}v${2*w}z`;
-  return `<g stroke="#111" stroke-width="0.02" fill="#111"><line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/><path stroke="none" d="${head(x0,y0,sgn)}${head(x1,y1,-sgn)}"/></g>`;
-}
-function notchMarkup(it,edgeIdx,count){
+function notchPrims(it,edgeIdx,count){
   const pts=it.poly,n=pts.length,a=pts[edgeIdx],b=pts[(edgeIdx+1)%n];
   let area=0; for(let i=0;i<n;i++){const p=pts[i],q=pts[(i+1)%n]; area+=p.x*q.y-q.x*p.y;}
   const s=area>0?1:-1, dx=b.x-a.x, dy=b.y-a.y, l=Math.hypot(dx,dy)||1;
   const tx=dx/l,ty=dy/l,nx=s*dy/l,ny=-s*dx/l, mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
-  const offs=count===1?[0]:[-0.15,0.15];
-  let out='<g stroke="#111" stroke-width="0.035" stroke-linecap="round">';
+  const offs=count===1?[0]:[-0.15,0.15], out=[];
   for(const o of offs){
-    const px=mx+tx*o+it.dx, py=my+ty*o+it.dy, sa=it.saDist;
-    let x1,y1,x2,y2;
-    if(sa>=0.12){ const k=Math.min(0.3,sa); x1=px+nx*sa; y1=py+ny*sa; x2=px+nx*(sa-k); y2=py+ny*(sa-k); }
-    else { x1=px; y1=py; x2=px+nx*0.3; y2=py+ny*0.3; }
-    out+=`<line x1="${x1.toFixed(3)}" y1="${y1.toFixed(3)}" x2="${x2.toFixed(3)}" y2="${y2.toFixed(3)}"/>`;
+    const px=mx+tx*o, py=my+ty*o, sa=it.saDist;
+    let p1,p2;
+    if(sa>=0.12){ const k=Math.min(0.3,sa); p1={x:px+nx*sa,y:py+ny*sa}; p2={x:px+nx*(sa-k),y:py+ny*(sa-k)}; }
+    else { p1={x:px,y:py}; p2={x:px+nx*0.3,y:py+ny*0.3}; }
+    out.push({t:"poly",pts:[p1,p2],closed:false,kind:"ink",w:0.035});
   }
-  return out+"</g>";
+  return out;
 }
-function pieceMarkup(it){
-  const {dx,dy}=it;
-  let s="";
-  if(it.sa) s+=`<path d="${path(it.sa,dx,dy)}" fill="none" stroke="#6b7280" stroke-width="0.02" stroke-dasharray="0.12 0.08"/>`;
-  s+=`<path d="${path(it.poly,dx,dy)}" fill="rgba(31,95,91,.07)" stroke="#111" stroke-width="0.03" stroke-linejoin="round"/>`;
+function piecePrims(it,flags){
+  const P=[], txt=(x,y,size,text,bold=false,rot=0)=>P.push({t:"text",x,y,size,text,bold,rot});
+  const names=flags.showNames, instr=flags.showText;
+  if(it.sa) P.push({t:"poly",pts:it.sa,closed:true,kind:"sa",w:0.02,dash:[0.12,0.08]});
+  P.push({t:"poly",pts:it.poly,closed:true,kind:"ink",w:0.03,cls:"piece"});
+  const foldMark=(f0,f1,labelOk)=>{
+    const w=0.5;
+    P.push({t:"poly",pts:[{x:0,y:f0},{x:w,y:f0},{x:w,y:f1},{x:0,y:f1}],closed:false,kind:"ink",w:0.025});
+    P.push({t:"fill",pts:[{x:0,y:f0},{x:0.22,y:f0-0.09},{x:0.22,y:f0+0.09}]});
+    P.push({t:"fill",pts:[{x:0,y:f1},{x:0.22,y:f1-0.09},{x:0.22,y:f1+0.09}]});
+    if(instr&&labelOk) txt(w+0.38,(f0+f1)/2,0.27,"CUT ON FOLD",true,-90);
+  };
   if(it.kind==="body"){
     const gx=Math.max(1.9,it.halfW*0.6), y0=it.depth+2.0, y1=Math.min(it.hemCentre,it.hemSide)-1.0;
-    if(y1>y0+1) s+=arrow(gx+dx,y0+dy,gx+dx,y1+dy);
-    // cut-on-fold symbol on the left edge
-    const f0=it.depth+2.0, f1=Math.min(it.hemCentre,it.hemSide)-1.0;
-    if(f1>f0+1.5){
-      const w=0.55;
-      s+=`<g stroke="#111" stroke-width="0.025" fill="none"><path d="M${dx+0.0} ${f0+dy}H${dx+w}V${f1+dy}H${dx}"/></g>`;
-      s+=`<g fill="#111"><path d="M${dx} ${f0+dy}l0.22 -0.09v0.18z"/><path d="M${dx} ${f1+dy}l0.22 -0.09v0.18z"/></g>`;
-      const tx=dx+w+0.38, ty=(f0+f1)/2+dy;
-      s+=T(tx,ty,0.27,"CUT ON FOLD",`font-weight="700" transform="rotate(-90 ${tx.toFixed(3)} ${ty.toFixed(3)})"`);
+    if(y1>y0+1) P.push(...arrowPrims(gx,y0,gx,y1));
+    if(y1>y0+1.5) foldMark(y0,y1,true);
+    const cx=it.halfW*0.5;
+    if(names) txt(cx,it.depth+0.95,0.42,it.name,true);
+    if(instr) txt(cx,it.depth+1.4,0.28,it.cut);
+    if(it.buttonhole){
+      const d=it.buttonhole.d, hl=it.buttonhole.len/2;
+      P.push({t:"poly",pts:[{x:0,y:d},{x:hl,y:d}],closed:false,kind:"ink",w:0.03});
+      P.push({t:"poly",pts:[{x:hl,y:d-0.09},{x:hl,y:d+0.09}],closed:false,kind:"ink",w:0.03});
+      if(instr) txt(hl+0.95,d+0.08,0.22,"BUTTONHOLE");
     }
-    const cx=it.halfW*0.5+dx; s+=T(cx,it.depth+0.95+dy,0.42,it.name,'font-weight="700"')+T(cx,it.depth+1.4+dy,0.28,it.cut);
   } else if(it.kind==="sleeve"){
-    const c=bbox(it.poly), cx=(c.x0+c.x1)/2+dx, cy=(c.y0+c.y1)/2+dy;
-    s+=arrow(0.7+dx,1.2+dy,0.7+dx,it.poly[5].y-1.0+dy);
-    s+=T(cx+0.4,cy-0.2,0.42,it.name,'font-weight="700"')+T(cx+0.4,cy+0.25,0.28,it.cut);
+    const c=bbox(it.poly), cx=(c.x0+c.x1)/2, cy=(c.y0+c.y1)/2;
+    P.push(...arrowPrims(0.7,1.2,0.7,it.poly[5].y-1.0));
+    if(names) txt(cx+0.4,cy-0.2,0.42,it.name,true);
+    if(instr) txt(cx+0.4,cy+0.25,0.28,it.cut);
   } else {
-    const H=2*it.fh, cx=it.len/2+dx, cy=H/2+dy;
-    s+=`<line x1="${dx}" y1="${cy}" x2="${dx+it.len}" y2="${cy}" stroke="#111" stroke-width="0.02" stroke-dasharray="0.3 0.1 0.05 0.1"/>`;
-    s+=T(dx+0.55,cy-0.08,0.22,"FOLD",'font-weight="700"');
-    s+=T(cx,cy-0.62,0.34,it.name,'font-weight="700"')+T(cx,cy-0.3,0.26,it.cut);
-    const cutL=lenText(it.len+2*it.saDist), cutH=lenText(H+2*it.saDist);
-    s+=T(cx,cy+0.42,0.24,"Cut size "+cutL+" x "+cutH+" (includes seam allowance)");
+    const H=2*it.fh, cx=it.len/2+(it.onFold?0.3:0), cy=H/2;
+    P.push({t:"poly",pts:[{x:0,y:cy},{x:it.len,y:cy}],closed:false,kind:"ink",w:0.02,dash:[0.3,0.1,0.05,0.1]});
+    if(it.onFold && H>=1.6) foldMark(0.45,H-0.45,false);
+    if(instr) txt(it.len-0.5,cy-0.08,0.22,"FOLD",true);
+    if(names) txt(cx,cy-0.62,0.34,it.name,true);
+    if(instr){
+      txt(cx,cy-0.3,0.26,it.cut);
+      const cutL=lenText(it.len+(it.onFold?1:2)*it.saDist), cutH=lenText(H+2*it.saDist);
+      txt(cx,cy+0.42,0.24,"Cut size "+cutL+" x "+cutH+" (includes seam allowance)");
+    }
   }
-  for(const nt of it.notches) s+=notchMarkup(it,nt.edge,nt.count);
-  return s;
+  for(const nt of it.notches) P.push(...notchPrims(it,nt.edge,nt.count));
+  return P;
 }
-function layoutSVG(L,{widthIn=true}={}){
-  const body=L.items.map(pieceMarkup).join("");
-  const size = widthIn ? `width="${L.W.toFixed(3)}in" height="${L.H.toFixed(3)}in"` : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" ${size} viewBox="0 0 ${L.W.toFixed(3)} ${L.H.toFixed(3)}">${body}</svg>`;
+
+/* ---------- layout: pack the pieces to the roll width ---------- */
+function perms(a){ const out=[]; (function rec(k){ if(k===a.length){out.push(a.slice());return;}
+  for(let i=k;i<a.length;i++){[a[k],a[i]]=[a[i],a[k]];rec(k+1);[a[k],a[i]]=[a[i],a[k]];} })(0); return out; }
+function packOnce(order,rots,items,U,gap){
+  let x=0,y=0,rowH=0; const place=[];
+  for(const i of order){
+    const it=items[i], r=rots[i], w=r?it.h:it.w, h=r?it.w:it.h;
+    if(w>U+1e-6) return null;
+    if(x>0 && x+w>U+1e-6){ x=0; y+=rowH+gap; rowH=0; }
+    place[i]={x,y,w,h,rot:r}; x+=w+gap; rowH=Math.max(rowH,h);
+  }
+  return {place,length:y+rowH};
+}
+function layout(v,res,flags){
+  const margin=0.5, gap=0.5, sa=Math.max(0,v.sa);
+  const items=res.pieces.map(p=>{
+    const it={...p,sa:sa>0?offsetPoly(p.poly,sa,p.fold):null,saDist:sa};
+    it.bb=bbox(it.sa||it.poly); it.w=it.bb.x1-it.bb.x0; it.h=it.bb.y1-it.bb.y0; return it;
+  });
+  let U=v.roll-2*margin, tooNarrow=null;
+  const need=Math.max(...items.map(i=>i.canRotate?Math.min(i.w,i.h):i.w));
+  if(need>U+1e-6){
+    const worst=items.reduce((a,b)=>((b.canRotate?Math.min(b.w,b.h):b.w)>(a.canRotate?Math.min(a.w,a.h):a.w)?b:a));
+    tooNarrow={need:need+2*margin,name:worst.name}; U=need;
+  }
+  const rotIdx=items.map((it,i)=>it.canRotate?i:-1).filter(i=>i>=0);
+  let best=null;
+  for(const order of perms(items.map((_,i)=>i))){
+    for(let mask=0;mask<(1<<rotIdx.length);mask++){
+      const rots=items.map(()=>false); let nr=0;
+      rotIdx.forEach((i,k)=>{ if(mask&(1<<k)){rots[i]=true;nr++;} });
+      const r=packOnce(order,rots,items,U,gap);
+      if(!r) continue;
+      if(!best || r.length<best.length-1e-6 || (Math.abs(r.length-best.length)<1e-6 && nr<best.nr)) best={...r,nr};
+    }
+  }
+  const W=(tooNarrow?tooNarrow.need:v.roll), H=best.length+2*margin;
+  let prims=[];
+  items.forEach((it,i)=>{
+    const s=best.place[i]; it.sx=margin+s.x; it.sy=margin+s.y; it.sw=s.w; it.sh=s.h; it.rotated=s.rot;
+    const local=piecePrims(it,flags);
+    // place: optional 90-degree clockwise turn, then move into the slot
+    const b=it.bb;
+    const map=s.rot? (p=>({x:-p.y,y:p.x})) : (p=>p);
+    const lo=s.rot? {x:-b.y1,y:b.x0} : {x:b.x0,y:b.y0};
+    const tx=it.sx-lo.x, ty=it.sy-lo.y;
+    for(const pr of local){
+      if(pr.t==="text"){ const m=map(pr); prims.push({...pr,x:m.x+tx,y:m.y+ty,rot:pr.rot+(s.rot?90:0)}); }
+      else prims.push({...pr,pts:pr.pts.map(p=>{const m=map(p);return{x:m.x+tx,y:m.y+ty};})});
+    }
+  });
+  return {items,prims,W,H,tooNarrow};
+}
+
+/* ---------- renderers ---------- */
+const STROKE={ink:"#111111",sa:"#6b7280"};
+function svgFromPrims(L,{sized=true}={}){
+  const f=n=>(+n).toFixed(3), d=pts=>"M"+pts.map(p=>f(p.x)+" "+f(p.y)).join("L");
+  let s="";
+  for(const p of L.prims){
+    if(p.t==="poly") s+=`<path${p.cls?` class="${p.cls}"`:""} d="${d(p.pts)}${p.closed?"Z":""}" fill="none" stroke="${STROKE[p.kind]}" stroke-width="${p.w}" stroke-linejoin="round"${p.dash?` stroke-dasharray="${p.dash.join(" ")}"`:""}/>`;
+    else if(p.t==="fill") s+=`<path d="${d(p.pts)}Z" fill="#111111" stroke="none"/>`;
+    else s+=`<text x="${f(p.x)}" y="${f(p.y)}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="${p.size}"${p.bold?' font-weight="700"':""} fill="#111111"${p.rot?` transform="rotate(${p.rot} ${f(p.x)} ${f(p.y)})"`:""}>${p.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</text>`;
+  }
+  const size=sized?`width="${f(L.W)}in" height="${f(L.H)}in"`:"";
+  return `<svg xmlns="http://www.w3.org/2000/svg" ${size} viewBox="0 0 ${f(L.W)} ${f(L.H)}">${s}</svg>`;
+}
+let _mctx=null;
+function textWidth(text,size,bold){
+  try{
+    _mctx=_mctx||document.createElement("canvas").getContext("2d");
+    _mctx.font=(bold?"bold ":"")+"100px Arial, Helvetica, sans-serif";
+    const w=_mctx.measureText(text).width; if(w>0) return w/100*size;
+  }catch(e){}
+  return text.length*size*0.55;
+}
+function pdfFromPrims(L){
+  const f=n=>(+n).toFixed(4), esc=t=>t.replace(/[^\x20-\x7e]/g,"?").replace(/([()\\])/g,"\\$1");
+  const wpt=L.W*72, hpt=L.H*72;
+  let c=`72 0 0 -72 0 ${hpt.toFixed(3)} cm\n1 J 1 j\n`;
+  for(const p of L.prims){
+    if(p.t==="poly"){
+      const col=p.kind==="sa"?"0.42 0.447 0.502":"0.067 0.067 0.067";
+      c+=`${col} RG ${f(p.w)} w ${p.dash?`[${p.dash.map(f).join(" ")}] 0 d`:"[] 0 d"}\n`;
+      c+=p.pts.map((q,i)=>`${f(q.x)} ${f(q.y)} ${i?"l":"m"}`).join(" ")+(p.closed?" h":"")+" S\n";
+    } else if(p.t==="fill"){
+      c+="0.067 0.067 0.067 rg\n"+p.pts.map((q,i)=>`${f(q.x)} ${f(q.y)} ${i?"l":"m"}`).join(" ")+" h f\n";
+    } else {
+      const th=p.rot*Math.PI/180, co=Math.cos(th), si=Math.sin(th), w=textWidth(p.text,p.size,p.bold);
+      const x0=p.x-co*w/2, y0=p.y-si*w/2;
+      c+=`0.067 0.067 0.067 rg BT /${p.bold?"F2":"F1"} ${f(p.size)} Tf ${f(co)} ${f(si)} ${f(si)} ${f(-co)} ${f(x0)} ${f(y0)} Tm (${esc(p.text)}) Tj ET\n`;
+    }
+  }
+  const objs=[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wpt.toFixed(3)} ${hpt.toFixed(3)}] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>`,
+    `<< /Length ${c.length} >>\nstream\n${c}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+  ];
+  let out="%PDF-1.4\n", offs=[];
+  objs.forEach((o,i)=>{ offs.push(out.length); out+=`${i+1} 0 obj\n${o}\nendobj\n`; });
+  const xr=out.length;
+  out+=`xref\n0 ${objs.length+1}\n0000000000 65535 f \n`+offs.map(o=>String(o).padStart(10,"0")+" 00000 n \n").join("");
+  out+=`trailer\n<< /Size ${objs.length+1} /Root 1 0 R >>\nstartxref\n${xr}\n%%EOF\n`;
+  return out;
 }
 function tileMarkup(x0,y0,tw,th){
   const m=0.25;
@@ -391,13 +524,15 @@ function update(){
   for(const e of res.errors) msgs.insertAdjacentHTML("beforeend",`<div class="msg err">${e}</div>`);
   for(const w of res.warnings) msgs.insertAdjacentHTML("beforeend",`<div class="msg warn">${w}</div>`);
   if(!res.pieces.length){ clearAll(); return; }
-  const L=layout(v,res);
+  const L=layout(v,res,v);
+  if(L.tooNarrow) msgs.insertAdjacentHTML("beforeend",`<div class="msg warn">The ${L.tooNarrow.name} piece needs a roll at least ${lenText(L.tooNarrow.need)} wide, so the layout uses that width.</div>`);
   current={v,res,L};
-  document.getElementById("preview").innerHTML=layoutSVG(L,{widthIn:false}).replace("<svg ",'<svg role="img" aria-label="Pattern pieces" ');
+  document.getElementById("preview").innerHTML=svgFromPrims(L,{sized:false}).replace("<svg ",'<svg role="img" aria-label="Pattern pieces" ');
   const u = unit==="cm" ? "cm" : "in";
   document.getElementById("checks").innerHTML=
     `<tr><th>Seam</th><th>Length (${u})</th><th>Matches</th><th>Length (${u})</th></tr>`+
     res.checks.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[3]}</td><td>${r[2]}</td></tr>`).join("");
+  document.getElementById("sheetsize").textContent=`Sheet: ${lenText(L.W)} wide x ${lenText(L.H)} long`;
   buildPrint(L);
   saveHash();
 }
@@ -408,8 +543,8 @@ function buildPrint(L){
   const stepX=tw-overlap, stepY=th-overlap;
   const cols=Math.max(1,Math.ceil((L.W-tw)/stepX)+1), rows=Math.max(1,Math.ceil((L.H-th)/stepY)+1);
   const pages=[];
-  const hits=(x0,y0)=>L.items.some(it=>{const bx0=it.dx+it.bb.x0,by0=it.dy+it.bb.y0,bx1=bx0+it.w,by1=by0+it.h; return bx1>x0&&bx0<x0+tw&&by1>y0&&by0<y0+th;});
-  const body=L.items.map(pieceMarkup).join("");
+  const hits=(x0,y0)=>L.items.some(it=>it.sx+it.sw>x0&&it.sx<x0+tw&&it.sy+it.sh>y0&&it.sy<y0+th);
+  const body=svgFromPrims(L,{sized:false}).replace(/^<svg[^>]*>/,"").replace(/<\/svg>$/,"");
   let n=0;
   for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
     const x0=c*stepX, y0=r*stepY;
@@ -422,27 +557,29 @@ function buildPrint(L){
   }
   document.getElementById("printArea").innerHTML=pages.join("");
   document.getElementById("pageStyle").textContent=`@page{size:${pd.w}in ${pd.h}in;margin:0}`;
-  document.getElementById("pagecount").textContent=`${n} page${n===1?"":"s"} on ${pd.name} paper`;
+  document.getElementById("pagecount").textContent=`Sheet printing: ${n} page${n===1?"":"s"} on ${pd.name}`;
 }
 
 /* ---------- share / state ---------- */
 function saveHash(){
   const v=readInches(); const p=new URLSearchParams();
   for(const f of ALL) p.set(f.id, round(v[f.id],4));
+  for(const f of FLAGS) p.set(f.id, v[f.id]?"1":"0");
   p.set("paper", document.getElementById("paper").value);
   history.replaceState(null,"","#"+p.toString());
 }
 function loadHash(){
   const vals=defaults(); const p=new URLSearchParams(location.hash.slice(1));
   for(const f of ALL){ const x=parseFloat(p.get(f.id)); if(isFinite(x)) vals[f.id]=x; }
-  setInputs(vals);
+  for(const f of FLAGS){ if(p.has(f.id)) vals[f.id]=p.get(f.id)==="1"; }
+  setInputs(vals); setFlags(vals);
   if(p.get("paper")==="A4") document.getElementById("paper").value="A4";
 }
 
 /* ---------- init ---------- */
 const paperRow=document.createElement("div"); paperRow.className="row";
-paperRow.innerHTML='<label for="paper">Paper size<small>For printing the pattern in tiles</small></label><select id="paper"><option>Letter</option><option>A4</option></select>';
-document.getElementById("trims").append(paperRow);
+paperRow.innerHTML='<label for="paper">Sheet size<small>Only for printing on sheets of paper</small></label><select id="paper"><option>Letter</option><option>A4</option></select>';
+document.getElementById("layoutset").append(paperRow);
 const ps=document.createElement("style"); ps.id="pageStyle"; document.head.append(ps);
 document.getElementById("paper").addEventListener("change",update);
 
@@ -452,17 +589,23 @@ document.querySelectorAll('input[name=unit]').forEach(r=>r.addEventListener("cha
   if(ALL.every(f=>isFinite(v[f.id]))) setInputs(v);
   update();
 }));
-document.getElementById("reset").addEventListener("click",()=>{setInputs(defaults());update();});
+document.getElementById("reset").addEventListener("click",()=>{const d=defaults();setInputs(d);setFlags(d);update();});
 document.getElementById("share").addEventListener("click",async()=>{
   try{ await navigator.clipboard.writeText(location.href); alert("Link copied. Anyone who opens it sees these measurements."); }
   catch{ prompt("Copy this link:", location.href); }
 });
 document.getElementById("print").addEventListener("click",()=>window.print());
+function download(name,blob){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+document.getElementById("downloadPdf").addEventListener("click",()=>{
+  if(!current) return;
+  download("dog-raglan-shirt.pdf",new Blob([pdfFromPrims(current.L)],{type:"application/pdf"}));
+});
 document.getElementById("download").addEventListener("click",()=>{
   if(!current) return;
-  const blob=new Blob([layoutSVG(current.L)],{type:"image/svg+xml"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="dog-raglan-shirt.svg"; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  download("dog-raglan-shirt.svg",new Blob([svgFromPrims(current.L)],{type:"image/svg+xml"}));
 });
 loadHash(); update();
 </script>
